@@ -12,44 +12,45 @@ CREATE TABLE accounts (
 CREATE TABLE channels (
     channel_id SERIAL PRIMARY KEY,
     account_id INT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
-    name_channel VARCHAR(100) NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
     avatar_url VARCHAR(500),
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_channel_name_len CHECK (char_length(name_channel) >= 3)
+    CONSTRAINT chk_channel_name_len CHECK (char_length(name) >= 3)
 );
 
-CREATE INDEX idx_channel_account ON channels(account_id);
+CREATE INDEX idx_channels_account ON channels(account_id);
 
 -- Настройки канала
 CREATE TABLE channel_settings (
-	channel_id INT PRIMARY KEY REFERENCES channels(channel_id) ON DELETE CASCADE,
-	is_monetizeted BOOLEAN NOT NULL DEFAULT FALSE,
-	comments_eneble BOOLEAN NOT NULL DEFAULT TRUE,
-	country_code CHAR(2),
-	updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    channel_id INT PRIMARY KEY REFERENCES channels(channel_id) ON DELETE CASCADE,
+    is_monetized BOOLEAN NOT NULL DEFAULT FALSE,
+    comments_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    country_code CHAR(2),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 -- Видео
 CREATE TABLE videos (
-	video_id SERIAL PRIMARY KEY,
-	channel_id INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
-	title VARCHAR(200) NOT NULL,
-	description TEXT,
-	duration_sec INT NOT NULL,
-	views_count BIGINT NOT NULL DEFAULT 0,
-	published_at TIMESTAMP NOT NULL DEFAULT NOW(),
-	CONSTRAINT chk_duration CHECK (duration_sec > 0),
+    video_id SERIAL PRIMARY KEY,
+    channel_id INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    duration_sec INT NOT NULL,
+    views_count BIGINT NOT NULL DEFAULT 0,
+    published_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_duration CHECK (duration_sec > 0),
     CONSTRAINT chk_views CHECK (views_count >= 0)
 );
 
 CREATE INDEX idx_videos_channel ON videos(channel_id);
 
+
 -- Подписки
 CREATE TABLE subscriptions (
     subscriber_channel_id INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
-    target_channel_id     INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
-    subscribed_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    target_channel_id INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    subscribed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (subscriber_channel_id, target_channel_id),
     CONSTRAINT chk_no_self_subscription CHECK (subscriber_channel_id <> target_channel_id)
 );
@@ -66,43 +67,72 @@ CREATE TABLE comments (
 
 CREATE INDEX idx_comments_video ON comments(video_id);
 
--- Лайки 
+-- Лайки
 CREATE TABLE likes (
-    channel_id INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
-    video_id INT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
-    liked_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    channel_id  INT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    video_id    INT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
+    liked_at    TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (channel_id, video_id)
 );
 
-CREATE OR REPLACE FUNCTION prevent_last_channel_deletion()
+CREATE OR REPLACE FUNCTION check_account_has_channel()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_account_id INT;
 BEGIN
-    IF (SELECT COUNT(*) FROM channels WHERE account_id = OLD.account_id) <= 1 THEN
-        RAISE EXCEPTION 'Нельзя удалить последний канал аккаунта %', OLD.account_id;
+    v_account_id := COALESCE(NEW.account_id, OLD.account_id);
+
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE account_id = v_account_id) THEN
+        RETURN NULL;
     END IF;
-    RETURN OLD;
+
+    IF NOT EXISTS (SELECT 1 FROM channels WHERE account_id = v_account_id) THEN
+        RAISE EXCEPTION
+            'Нарушение инварианта: у аккаунта % нет ни одного канала',
+            v_account_id;
+    END IF;
+
+    RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_prevent_last_channel
-BEFORE DELETE ON channels
-FOR EACH ROW EXECUTE FUNCTION prevent_last_channel_deletion();
+-- Проверка при вставке нового аккаунта
+CREATE CONSTRAINT TRIGGER trg_account_must_have_channel_ins
+AFTER INSERT ON accounts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_account_has_channel();
 
+-- Проверка при изменении принадлежности канала (увод канала)
+CREATE CONSTRAINT TRIGGER trg_account_must_have_channel_upd
+AFTER UPDATE OF account_id ON channels
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_account_has_channel();
+
+-- Проверка при удалении канала
+CREATE CONSTRAINT TRIGGER trg_account_must_have_channel_del
+AFTER DELETE ON channels
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_account_has_channel();
+
+-- Тестовые данные
 INSERT INTO accounts (email, password_hash) VALUES
 ('alice@mail.com', 'hash1'),
 ('bob@mail.com', 'hash2'),
 ('carol@mail.com', 'hash3');
 
-INSERT INTO channels (account_id, name_channel, description) VALUES
-(1, 'Alice Tech','Технологии'),
+INSERT INTO channels (account_id, name, description) VALUES
+(1, 'Alice Tech', 'Технологии'),
 (1, 'Alice Vlog', 'Влоги'),
 (2, 'Bob Games', 'Игры'),
 (3, 'Carol Music', 'Музыка');
 
-INSERT INTO channel_settings (channel_id, is_monetizeted, country_code) VALUES
-(1, TRUE,'RU'),
+INSERT INTO channel_settings (channel_id, is_monetized, country_code) VALUES
+(1, TRUE,  'RU'),
 (2, FALSE, 'RU'),
-(3, TRUE, 'US'),
+(3, TRUE,  'US'),
 (4, FALSE, 'KZ');
 
 INSERT INTO videos (channel_id, title, duration_sec) VALUES
